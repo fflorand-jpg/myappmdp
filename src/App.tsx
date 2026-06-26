@@ -53,7 +53,7 @@ import { Capacitor } from '@capacitor/core';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import { BottleFormat, CalculationInput, BottleFormatType, CalculationLog, ProductionRecap } from './types';
-import { PACKAGING_MACHINES, MachineProcedure, ProcedureStep, SupplyItem } from './operatingProcedures';
+import { PACKAGING_MACHINES, MachineProcedure, ProcedureStep, SupplyItem } from './OperatingProcedures';
 import CameraCaptureModal from './components/CameraCaptureModal';
 
 const BOTTLE_FORMATS: BottleFormat[] = [
