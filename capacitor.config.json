@@ -1,8 +1,0 @@
-{
-  "appId": "com.mdp.horsligne",
-  "appName": "MDP",
-  "webDir": "dist",
-  "server": {
-    "androidScheme": "https"
-  }
-}
