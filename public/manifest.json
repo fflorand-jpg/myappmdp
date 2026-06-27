@@ -1,0 +1,23 @@
+{
+  "short_name": "MDP",
+  "name": "MDP - Gestionnaire de Mots de Passe Hors-Ligne",
+  "description": "Un gestionnaire de mots de passe 100% hors-ligne, sécurisé localement et optimisé pour l'exportation et l'impression.",
+  "start_url": ".",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#ffffff",
+  "theme_color": "#2563eb",
+  "scope": "/",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
