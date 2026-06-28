@@ -915,10 +915,12 @@ export default function App() {
       const pdfDocGenerator = pdfMake.createPdf(docDefinition);
 
       if (window.cordova) {
-        // Android Cordova Context: Generate as blob and save natively
-        (pdfDocGenerator as any).getBlob((blob: any) => {
-          saveAndOpenPdfCordova(blob, fileName);
-        });
+        // Android Cordova Context: Generate as blob and save natively once deviceready is fired
+        document.addEventListener('deviceready', () => {
+          (pdfDocGenerator as any).getBlob((blob: any) => {
+            saveAndOpenPdfCordova(blob, fileName);
+          });
+        }, false);
       } else {
         // Browser Preview Context: Download file
         pdfDocGenerator.download(fileName);
@@ -950,63 +952,70 @@ export default function App() {
       const jsonString = JSON.stringify(backupData, null, 2);
       const fileName = `sauvegarde_mdp_horsligne_${new Date().toISOString().slice(0, 10)}.json`;
 
-      if (window.cordova && window.resolveLocalFileSystemURL) {
-        // Android Cordova File Storage: save natively in device memory
-        const directory = window.cordova.file.externalRootDirectory || 
-                          window.cordova.file.documentsDirectory || 
-                          window.cordova.file.externalDataDirectory || 
-                          window.cordova.file.dataDirectory;
+      if (window.cordova) {
+        // Android Cordova Context: save natively once deviceready is fired
+        document.addEventListener('deviceready', () => {
+          if (!window.resolveLocalFileSystemURL) {
+            showCustomAlert("Erreur de stockage", "Le plugin Cordova File n'est pas prêt.");
+            return;
+          }
+          // Android Cordova File Storage: save natively in device memory
+          const directory = window.cordova.file.externalRootDirectory || 
+                            window.cordova.file.documentsDirectory || 
+                            window.cordova.file.externalDataDirectory || 
+                            window.cordova.file.dataDirectory;
 
-        window.resolveLocalFileSystemURL(directory, (dirEntry: any) => {
-          dirEntry.getFile(fileName, { create: true, exclusive: false }, (fileEntry: any) => {
-            fileEntry.createWriter((fileWriter: any) => {
-              fileWriter.onwriteend = () => {
-                showCustomAlert(
-                  "Exportation Cordova Réussie",
-                  `Fichier sauvegardé avec succès !\n\nNom : ${fileName}\nEmplacement : ${fileEntry.toURL()}\n\nVous pouvez copier ce fichier de sauvegarde sur un autre support.`
-                );
-              };
+          window.resolveLocalFileSystemURL(directory, (dirEntry: any) => {
+            dirEntry.getFile(fileName, { create: true, exclusive: false }, (fileEntry: any) => {
+              fileEntry.createWriter((fileWriter: any) => {
+                fileWriter.onwriteend = () => {
+                  showCustomAlert(
+                    "Exportation Cordova Réussie",
+                    `Fichier sauvegardé avec succès !\n\nNom : ${fileName}\nEmplacement : ${fileEntry.toURL()}\n\nVous pouvez copier ce fichier de sauvegarde sur un autre support.`
+                  );
+                };
 
-              fileWriter.onerror = (e: any) => {
-                console.error("Erreur d'écriture du fichier:", e);
-                showCustomAlert("Erreur d'écriture", "Impossible d'écrire les données de sauvegarde.");
-              };
+                fileWriter.onerror = (e: any) => {
+                  console.error("Erreur d'écriture du fichier:", e);
+                  showCustomAlert("Erreur d'écriture", "Impossible d'écrire les données de sauvegarde.");
+                };
 
-              const blob = new Blob([jsonString], { type: 'application/json' });
-              fileWriter.write(blob);
+                const blob = new Blob([jsonString], { type: 'application/json' });
+                fileWriter.write(blob);
+              }, (err: any) => {
+                console.error("Erreur createWriter:", err);
+                showCustomAlert("Erreur technique", "Impossible d'initialiser le système d'écriture.");
+              });
             }, (err: any) => {
-              console.error("Erreur createWriter:", err);
-              showCustomAlert("Erreur technique", "Impossible d'initialiser le système d'écriture.");
+              console.error("Erreur getFile:", err);
+              showCustomAlert("Erreur de fichier", "Impossible de créer le fichier sauvegarde.json");
             });
           }, (err: any) => {
-            console.error("Erreur getFile:", err);
-            showCustomAlert("Erreur de fichier", "Impossible de créer le fichier sauvegarde.json");
-          });
-        }, (err: any) => {
-          console.error("Erreur resolveLocalFileSystemURL:", err);
-          // Fallback to cache
-          const cacheDir = window.cordova.file.cacheDirectory || window.cordova.file.tempDirectory;
-          if (cacheDir) {
-            window.resolveLocalFileSystemURL(cacheDir, (fallbackDir: any) => {
-              fallbackDir.getFile(fileName, { create: true, exclusive: false }, (fileEntry: any) => {
-                fileEntry.createWriter((fileWriter: any) => {
-                  fileWriter.onwriteend = () => {
-                    showCustomAlert(
-                      "Sauvegarde enregistrée (Cache)",
-                      `Fichier enregistré dans le dossier temporaire :\n${fileEntry.toURL()}`
-                    );
-                  };
-                  const blob = new Blob([jsonString], { type: 'application/json' });
-                  fileWriter.write(blob);
+            console.error("Erreur resolveLocalFileSystemURL:", err);
+            // Fallback to cache
+            const cacheDir = window.cordova.file.cacheDirectory || window.cordova.file.tempDirectory;
+            if (cacheDir) {
+              window.resolveLocalFileSystemURL(cacheDir, (fallbackDir: any) => {
+                fallbackDir.getFile(fileName, { create: true, exclusive: false }, (fileEntry: any) => {
+                  fileEntry.createWriter((fileWriter: any) => {
+                    fileWriter.onwriteend = () => {
+                      showCustomAlert(
+                        "Sauvegarde enregistrée (Cache)",
+                        `Fichier enregistré dans le dossier temporaire :\n${fileEntry.toURL()}`
+                      );
+                    };
+                    const blob = new Blob([jsonString], { type: 'application/json' });
+                    fileWriter.write(blob);
+                  });
                 });
+              }, (err2: any) => {
+                showCustomAlert("Erreur", "Impossible d'accéder au système de fichiers.");
               });
-            }, (err2: any) => {
-              showCustomAlert("Erreur", "Impossible d'accéder au système de fichiers.");
-            });
-          } else {
-            showCustomAlert("Erreur de stockage", "Impossible d'accéder à l'espace de stockage Android.");
-          }
-        });
+            } else {
+              showCustomAlert("Erreur de stockage", "Impossible d'accéder à l'espace de stockage Android.");
+            }
+          });
+        }, false);
       } else {
         // Fallback for browser preview
         const blob = new Blob([jsonString], { type: 'application/json' });
