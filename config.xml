@@ -24,4 +24,14 @@
     <preference name="DisallowOverscroll" value="true" />
     <preference name="BackgroundColor" value="#ffffff" />
     <preference name="Orientation" value="portrait" />
+
+  <plugin name="cordova-plugin-file" spec="^8.1.0" />
+    <plugin name="cordova-plugin-file-opener2" spec="^4.0.0" />
+
+      <platform name="android">
+          <config-file parent="/*" target="AndroidManifest.xml">
+                <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+                      <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+                          </config-file>
+                            </platform>
 </widget>
