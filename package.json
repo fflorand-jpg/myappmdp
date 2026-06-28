@@ -29,7 +29,10 @@
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
     "sql.js": "^1.14.1",
-    "vite": "^6.2.3"
+    "vite": "^6.2.3",
+    "cordova-plugin-file": "^8.1.0",
+    "cordova-plugin-file-opener2": "^4.0.0"
+    
   },
   "devDependencies": {
     "@capacitor/android": "^8.4.1",
