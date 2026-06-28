@@ -42,6 +42,22 @@ import { PasswordEntry, Category } from './types';
 import { encryptData, decryptData, generateCanary, verifyCanary } from './lib/crypto';
 import EntryForm from './components/EntryForm';
 
+import pdfMake from 'pdfmake/build/pdfmake';
+import pdfFonts from 'pdfmake/build/vfs_fonts';
+
+declare global {
+  interface Window {
+    cordova?: any;
+    resolveLocalFileSystemURL?: any;
+    LocalFileSystem?: any;
+  }
+}
+
+// Initialize pdfMake virtual fonts
+if (pdfFonts && (pdfFonts as any).pdfMake) {
+  (pdfMake as any).vfs = (pdfFonts as any).pdfMake.vfs;
+}
+
 export interface CustomCategory {
   id: string;
   label: string;
@@ -265,8 +281,8 @@ export default function App() {
   const [editingEntry, setEditingEntry] = useState<PasswordEntry | null>(null);
   const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
   const [showSidebarMenu, setShowSidebarMenu] = useState<boolean>(false);
-  const [showPrintMode, setShowPrintMode] = useState<boolean>(false);
-  const [printShowPasswords, setPrintShowPasswords] = useState<boolean>(true);
+  const [showPdfOptionsModal, setShowPdfOptionsModal] = useState<boolean>(false);
+  const [pdfPasswordsVisible, setPdfPasswordsVisible] = useState<boolean>(true);
 
   // Custom non-blocking dialog states (confirm & prompt) for reliable execution on Android Webviews
   const [confirmModal, setConfirmModal] = useState<{
@@ -670,6 +686,421 @@ export default function App() {
     localStorage.setItem('vault_autolock_minutes', mins.toString());
   };
 
+  // Cordova Native helper to save a blob as a file and open it using Cordova plugins
+  const saveAndOpenPdfCordova = (blob: Blob, fileName: string) => {
+    if (!window.cordova || !window.resolveLocalFileSystemURL) {
+      console.error("Cordova File API standard is not loaded.");
+      showCustomAlert("Erreur de stockage", "Le plugin Cordova File n'est pas prêt.");
+      return;
+    }
+
+    // Use standard cache directory since it is private and accessible for opening
+    const storageDir = window.cordova.file.cacheDirectory || window.cordova.file.externalCacheDirectory || window.cordova.file.dataDirectory;
+
+    window.resolveLocalFileSystemURL(storageDir, (dirEntry: any) => {
+      dirEntry.getFile(fileName, { create: true, exclusive: false }, (fileEntry: any) => {
+        fileEntry.createWriter((fileWriter: any) => {
+          fileWriter.onwriteend = () => {
+            console.log("Fichier écrit avec succès: " + fileEntry.toURL());
+            
+            // Open the file with cordova-plugin-file-opener2
+            if (window.cordova.plugins && window.cordova.plugins.fileOpener2) {
+              window.cordova.plugins.fileOpener2.open(
+                fileEntry.toURL(),
+                'application/pdf',
+                {
+                  error: (err: any) => {
+                    console.error("Erreur d'ouverture via fileOpener2: ", err);
+                    showCustomAlert(
+                      "Erreur d'ouverture", 
+                      "Fichier enregistré mais impossible d'ouvrir le PDF automatiquement. Veuillez vérifier que vous avez un lecteur PDF installé sur votre appareil Android."
+                    );
+                  },
+                  success: () => {
+                    console.log("PDF ouvert avec succès via fileOpener2 !");
+                  }
+                }
+              );
+            } else {
+              console.warn("Le plugin fileOpener2 n'est pas disponible.");
+              showCustomAlert(
+                "Fichier enregistré", 
+                `Votre PDF a été enregistré avec succès sous ${fileName} dans le cache local.`
+              );
+            }
+          };
+
+          fileWriter.onerror = (e: any) => {
+            console.error("Erreur d'écriture du fichier: ", e);
+            showCustomAlert("Erreur d'enregistrement", "Échec de l'écriture physique du fichier.");
+          };
+
+          fileWriter.write(blob);
+        }, (err: any) => {
+          console.error("Erreur de création de fileWriter: ", err);
+          showCustomAlert("Erreur technique", "Impossible d'initialiser le gestionnaire d'écriture.");
+        });
+      }, (err: any) => {
+        console.error("Erreur getFile: ", err);
+        showCustomAlert("Erreur d'accès", "Impossible de créer le fichier d'exportation.");
+      });
+    }, (err: any) => {
+      console.error("Erreur resolveLocalFileSystemURL: ", err);
+      showCustomAlert("Erreur d'accès", "Impossible de résoudre le dossier de stockage local de l'application.");
+    });
+  };
+
+  // Main pdfMake builder & generator
+  const generateAndExportPdf = (showPasswords: boolean) => {
+    // 1. Group entries by their type (category), then alphabetically by title
+    const groupedEntries = categories.map(cat => {
+      const catEntries = entries
+        .filter(e => e.category === cat.id)
+        .sort((a, b) => a.title.localeCompare(b.title));
+      return {
+        category: cat,
+        entries: catEntries
+      };
+    }).filter(group => group.entries.length > 0);
+
+    const extraEntries = entries
+      .filter(e => !categories.some(c => c.id === e.category))
+      .sort((a, b) => a.title.localeCompare(b.title));
+    
+    if (extraEntries.length > 0) {
+      groupedEntries.push({
+        category: { id: 'other', label: 'Autres fiches / Notes', color: 'slate' },
+        entries: extraEntries
+      });
+    }
+
+    // 2. Build the PDF content definition
+    const pdfContent: any[] = [
+      { text: "Rapport de Sauvegarde des Codes d'Accès", style: 'header', alignment: 'center' },
+      { 
+        text: `Généré en toute sécurité le ${new Date().toLocaleDateString('fr-FR', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`, 
+        style: 'subheader',
+        alignment: 'center'
+      },
+      { text: `Fiches totales : ${entries.length} | Statut : Chiffré en local`, style: 'info', alignment: 'center' },
+      { canvas: [{ type: 'line', x1: 0, y1: 5, x2: 515, y2: 5, lineWidth: 1.5, color: '#1f2937' }] },
+      { text: ' ', margin: [0, 8] }
+    ];
+
+    if (groupedEntries.length === 0) {
+      pdfContent.push({ text: 'Aucune fiche trouvée dans votre coffre-fort.', style: 'emptyText' });
+    } else {
+      groupedEntries.forEach((group) => {
+        // Group heading (Category)
+        pdfContent.push({
+          text: `${group.category.label.toUpperCase()} (${group.entries.length})`,
+          style: 'categoryHeader',
+          margin: [0, 15, 0, 6]
+        });
+
+        // Create table
+        const tableBody: any[] = [];
+        // Add headers
+        tableBody.push([
+          { text: 'Titre / Nom', style: 'tableHeader' },
+          { text: 'Identifiant / Compte', style: 'tableHeader' },
+          { text: 'Mot de Passe', style: 'tableHeader' },
+          { text: 'Notes & URL / Site', style: 'tableHeader' }
+        ]);
+
+        // Add rows
+        group.entries.forEach((entry) => {
+          const titleVal = entry.title || '';
+          const userVal = entry.username || '-';
+          const passVal = showPasswords ? (entry.password || '-') : '••••••••';
+          
+          const details: any[] = [];
+          if (entry.url) {
+            details.push({ text: entry.url + '\n', color: '#2563eb', fontSize: 8 });
+          }
+          if (entry.notes) {
+            details.push({ text: entry.notes, fontStyle: 'italic', color: '#4b5563', fontSize: 8 });
+          }
+          if (details.length === 0) {
+            details.push({ text: '-', color: '#9ca3af' });
+          }
+
+          tableBody.push([
+            { text: titleVal, bold: true },
+            { text: userVal },
+            { text: passVal, color: showPasswords ? '#b91c1c' : '#4b5563', bold: showPasswords },
+            { text: details }
+          ]);
+        });
+
+        pdfContent.push({
+          table: {
+            headerRows: 1,
+            widths: ['25%', '25%', '22%', '28%'],
+            body: tableBody
+          },
+          layout: {
+            hLineWidth: (i: number, node: any) => (i === 0 || i === node.table.body.length) ? 1.5 : 0.5,
+            vLineWidth: (i: number, node: any) => (i === 0 || i === node.table.widths.length) ? 1.5 : 0.5,
+            hLineColor: () => '#d1d5db',
+            vLineColor: () => '#e5e7eb',
+            paddingLeft: () => 6,
+            paddingRight: () => 6,
+            paddingTop: () => 5,
+            paddingBottom: () => 5,
+          }
+        });
+      });
+    }
+
+    // Document footer lines
+    pdfContent.push({
+      text: '\n\nDocument confidentiel • Ne pas partager sans protection\nFichier de tableur généré via l\'application MDP Hors Ligne en local.',
+      style: 'footerText',
+      alignment: 'center'
+    });
+
+    const docDefinition: any = {
+      content: pdfContent,
+      styles: {
+        header: {
+          fontSize: 15,
+          bold: true,
+          color: '#111827',
+          margin: [0, 0, 0, 2]
+        },
+        subheader: {
+          fontSize: 9,
+          color: '#4b5563',
+          margin: [0, 0, 0, 2]
+        },
+        info: {
+          fontSize: 8.5,
+          color: '#4f46e5',
+          bold: true,
+          margin: [0, 0, 0, 6]
+        },
+        categoryHeader: {
+          fontSize: 10,
+          bold: true,
+          color: '#374151',
+          keepWithNext: true
+        },
+        tableHeader: {
+          bold: true,
+          fontSize: 9,
+          color: '#111827',
+          fillColor: '#f9fafb'
+        },
+        emptyText: {
+          fontSize: 10,
+          fontStyle: 'italic',
+          color: '#9ca3af',
+          alignment: 'center',
+          margin: [0, 25, 0, 25]
+        },
+        footerText: {
+          fontSize: 8,
+          color: '#9ca3af'
+        }
+      },
+      defaultStyle: {
+        fontSize: 8.5
+      }
+    };
+
+    const fileName = `mdp_coffre_sauvegarde_${new Date().toISOString().slice(0, 10)}.pdf`;
+
+    try {
+      const pdfDocGenerator = pdfMake.createPdf(docDefinition);
+
+      if (window.cordova) {
+        // Android Cordova Context: Generate as blob and save natively
+        (pdfDocGenerator as any).getBlob((blob: any) => {
+          saveAndOpenPdfCordova(blob, fileName);
+        });
+      } else {
+        // Browser Preview Context: Download file
+        pdfDocGenerator.download(fileName);
+        showCustomAlert('Rapport PDF Généré', 'Le PDF trié par catégorie a été généré et téléchargé avec succès !');
+      }
+    } catch (err) {
+      console.error("Erreur de génération pdfMake:", err);
+      showCustomAlert("Erreur", "Impossible de générer le fichier PDF.");
+    }
+  };
+
+  // Cordova Backup & Export Handlers (JSON Format via cordova-plugin-file)
+  const handleCordovaBackupExport = () => {
+    try {
+      const backupData = {
+        vault_canary: localStorage.getItem('vault_canary') || '',
+        vault_data: localStorage.getItem('vault_data') || '',
+        vault_categories: localStorage.getItem('vault_categories') || '',
+        vault_autolock_minutes: localStorage.getItem('vault_autolock_minutes') || '10',
+        vault_data_recovery: localStorage.getItem('vault_data_recovery') || '',
+        export_date: new Date().toISOString()
+      };
+
+      if (!backupData.vault_data || !backupData.vault_canary) {
+        showCustomAlert("Export impossible", "Votre coffre-fort n'est pas encore configuré ou est vide.");
+        return;
+      }
+
+      const jsonString = JSON.stringify(backupData, null, 2);
+      const fileName = `sauvegarde_mdp_horsligne_${new Date().toISOString().slice(0, 10)}.json`;
+
+      if (window.cordova && window.resolveLocalFileSystemURL) {
+        // Android Cordova File Storage: save natively in device memory
+        const directory = window.cordova.file.externalRootDirectory || 
+                          window.cordova.file.documentsDirectory || 
+                          window.cordova.file.externalDataDirectory || 
+                          window.cordova.file.dataDirectory;
+
+        window.resolveLocalFileSystemURL(directory, (dirEntry: any) => {
+          dirEntry.getFile(fileName, { create: true, exclusive: false }, (fileEntry: any) => {
+            fileEntry.createWriter((fileWriter: any) => {
+              fileWriter.onwriteend = () => {
+                showCustomAlert(
+                  "Exportation Cordova Réussie",
+                  `Fichier sauvegardé avec succès !\n\nNom : ${fileName}\nEmplacement : ${fileEntry.toURL()}\n\nVous pouvez copier ce fichier de sauvegarde sur un autre support.`
+                );
+              };
+
+              fileWriter.onerror = (e: any) => {
+                console.error("Erreur d'écriture du fichier:", e);
+                showCustomAlert("Erreur d'écriture", "Impossible d'écrire les données de sauvegarde.");
+              };
+
+              const blob = new Blob([jsonString], { type: 'application/json' });
+              fileWriter.write(blob);
+            }, (err: any) => {
+              console.error("Erreur createWriter:", err);
+              showCustomAlert("Erreur technique", "Impossible d'initialiser le système d'écriture.");
+            });
+          }, (err: any) => {
+            console.error("Erreur getFile:", err);
+            showCustomAlert("Erreur de fichier", "Impossible de créer le fichier sauvegarde.json");
+          });
+        }, (err: any) => {
+          console.error("Erreur resolveLocalFileSystemURL:", err);
+          // Fallback to cache
+          const cacheDir = window.cordova.file.cacheDirectory || window.cordova.file.tempDirectory;
+          if (cacheDir) {
+            window.resolveLocalFileSystemURL(cacheDir, (fallbackDir: any) => {
+              fallbackDir.getFile(fileName, { create: true, exclusive: false }, (fileEntry: any) => {
+                fileEntry.createWriter((fileWriter: any) => {
+                  fileWriter.onwriteend = () => {
+                    showCustomAlert(
+                      "Sauvegarde enregistrée (Cache)",
+                      `Fichier enregistré dans le dossier temporaire :\n${fileEntry.toURL()}`
+                    );
+                  };
+                  const blob = new Blob([jsonString], { type: 'application/json' });
+                  fileWriter.write(blob);
+                });
+              });
+            }, (err2: any) => {
+              showCustomAlert("Erreur", "Impossible d'accéder au système de fichiers.");
+            });
+          } else {
+            showCustomAlert("Erreur de stockage", "Impossible d'accéder à l'espace de stockage Android.");
+          }
+        });
+      } else {
+        // Fallback for browser preview
+        const blob = new Blob([jsonString], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showCustomAlert("Exportation Locale", "Fichier de sauvegarde JSON téléchargé avec succès !");
+      }
+    } catch (err) {
+      console.error("Erreur d'export:", err);
+      showCustomAlert("Erreur", "Une erreur est survenue lors de la création de la sauvegarde.");
+    }
+  };
+
+  // Cordova Import Handler
+  const handleCordovaBackupImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const content = event.target?.result as string;
+        const parsed = JSON.parse(content);
+
+        if (!parsed.vault_canary || !parsed.vault_data) {
+          showCustomAlert(
+            "Format invalide", 
+            "Ce fichier ne semble pas être une sauvegarde valide de l'application MDP Hors Ligne (clés de sécurité manquantes)."
+          );
+          return;
+        }
+
+        setConfirmModal({
+          isOpen: true,
+          title: "Confirmer l'importation ?",
+          message: "⚠️ Attention : L'importation de cette sauvegarde va écraser TOUTES vos fiches actuelles et réinitialiser votre session. Voulez-vous continuer ?",
+          danger: true,
+          confirmText: "Restaurer",
+          onConfirm: () => {
+            // Restore localStorage data
+            localStorage.setItem('vault_canary', parsed.vault_canary);
+            localStorage.setItem('vault_data', parsed.vault_data);
+            
+            if (parsed.vault_categories) {
+              localStorage.setItem('vault_categories', parsed.vault_categories);
+              try {
+                setCategories(JSON.parse(parsed.vault_categories));
+              } catch (_) {}
+            }
+            if (parsed.vault_autolock_minutes) {
+              localStorage.setItem('vault_autolock_minutes', parsed.vault_autolock_minutes);
+              setAutoLockMinutes(parseInt(parsed.vault_autolock_minutes, 10));
+            }
+            if (parsed.vault_data_recovery) {
+              localStorage.setItem('vault_data_recovery', parsed.vault_data_recovery);
+            }
+
+            // Sync component states
+            setCanary(parsed.vault_canary);
+            setEncryptedDataPayload(parsed.vault_data);
+            setIsConfigured(true);
+            setIsLocked(true); // Lock so they must type the password of the backup
+            setEntries([]);
+            setMasterPassword('');
+            setShowSettingsModal(false);
+
+            showCustomAlert(
+              "Restauration Réussie",
+              "Votre sauvegarde a été restaurée avec succès ! Connectez-vous maintenant avec le mot de passe maître associé à ce fichier de sauvegarde."
+            );
+          }
+        });
+      } catch (err) {
+        console.error("Erreur d'importation JSON:", err);
+        showCustomAlert("Erreur de lecture", "Impossible de lire ou de parser le fichier de sauvegarde sélectionné.");
+      }
+    };
+
+    reader.onerror = (err) => {
+      console.error("Erreur FileReader:", err);
+      showCustomAlert("Erreur", "Une erreur s'est produite lors de la lecture physique du fichier.");
+    };
+
+    reader.readAsText(file);
+    // Reset the input value so the same file can be selected again
+    e.target.value = '';
+  };
+
 
 
   // Helper method: assess strength rating of single entries
@@ -776,194 +1207,7 @@ export default function App() {
     );
   }
 
-  if (showPrintMode) {
-    // Group all entries by their category (type), then alphabetically by title
-    const groupedEntries = categories.map(cat => {
-      const catEntries = entries
-        .filter(e => e.category === cat.id)
-        .sort((a, b) => a.title.localeCompare(b.title));
-      return {
-        category: cat,
-        entries: catEntries
-      };
-    }).filter(group => group.entries.length > 0);
 
-    // Any entries that might be with an unknown category
-    const extraEntries = entries
-      .filter(e => !categories.some(c => c.id === e.category))
-      .sort((a, b) => a.title.localeCompare(b.title));
-    
-    if (extraEntries.length > 0) {
-      groupedEntries.push({
-        category: { id: 'other', label: 'Autres fiches / Notes', color: 'slate' },
-        entries: extraEntries
-      });
-    }
-
-    return (
-      <div className="min-h-screen bg-neutral-100 text-neutral-800 p-4 md:p-8 font-sans print:bg-white print:p-0">
-        {/* Print Control Bar (Hidden when actual printing takes place) */}
-        <div className="max-w-4xl mx-auto mb-6 bg-white border border-neutral-200 p-4 rounded-2xl shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4 print:hidden">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-indigo-50 flex items-center justify-center text-indigo-600">
-              <Printer size={20} className="stroke-[2.5]" />
-            </div>
-            <div>
-              <h2 className="font-bold text-neutral-900 text-sm">Générer le rapport PDF</h2>
-              <p className="text-[11px] text-neutral-500">
-                Toutes vos fiches triées par catégorie dans un tableau clair et imprimable.
-              </p>
-            </div>
-          </div>
-          
-          <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap">
-            {/* Password visible toggle */}
-            <label className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-neutral-700 select-none bg-neutral-50 hover:bg-neutral-100 p-2.5 px-3.5 rounded-xl border border-neutral-200 transition-colors">
-              <input
-                type="checkbox"
-                checked={printShowPasswords}
-                onChange={(e) => setPrintShowPasswords(e.target.checked)}
-                className="rounded border-neutral-300 text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5"
-              />
-              <span>Afficher les mots de passe</span>
-            </label>
-
-            <button
-              onClick={() => window.print()}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs p-2.5 px-4 rounded-xl flex items-center gap-2 cursor-pointer shadow-sm active:scale-95 transition-all"
-            >
-              <Printer size={14} /> Imprimer / PDF
-            </button>
-            <button
-              onClick={() => setShowPrintMode(false)}
-              className="bg-white border border-neutral-200 hover:bg-neutral-50 text-neutral-700 font-semibold text-xs p-2.5 px-4 rounded-xl flex items-center gap-1.5 cursor-pointer transition-all"
-            >
-              <X size={14} /> Retour
-            </button>
-          </div>
-        </div>
-
-        {/* Android / Mobile Helper Alert (Hidden when printed) */}
-        <div className="max-w-4xl mx-auto mb-6 bg-indigo-50/50 border border-indigo-150 p-3.5 rounded-xl flex items-start gap-3 print:hidden">
-          <Info size={16} className="text-indigo-600 shrink-0 mt-0.5" />
-          <div className="text-xs text-indigo-850 leading-relaxed">
-            <span className="font-semibold">Conseil d'exportation sur Android :</span> Lorsque vous cliquez sur le bouton <span className="font-semibold">Imprimer / PDF</span>, votre système Android ouvrira un volet d'impression. Cliquez sur le menu déroulant des imprimantes en haut, choisissez <span className="font-semibold">"Enregistrer au format PDF"</span> (ou l'icône ronde jaune/bleue PDF), puis choisissez le dossier de destination pour enregistrer votre fichier.
-          </div>
-        </div>
-
-        {/* The Actual Sheet / Document */}
-        <div className="max-w-4xl mx-auto bg-white border border-neutral-200 p-8 md:p-12 rounded-2xl shadow-sm print:shadow-none print:border-none print:p-0">
-          {/* Document Header */}
-          <div className="border-b-2 border-neutral-900 pb-6 mb-8 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-            <div>
-              <h1 className="text-xl font-bold text-neutral-900 tracking-tight font-sans">
-                Rapport de Sauvegarde des Codes d'Accès
-              </h1>
-              <p className="text-xs text-neutral-500 mt-1">
-                Généré en toute sécurité et localement depuis l'application <span className="font-semibold">MDP Hors Ligne</span>.
-              </p>
-            </div>
-            <div className="text-left sm:text-right text-[11px] text-neutral-500 font-mono space-y-0.5">
-              <div>Date : {new Date().toLocaleDateString('fr-FR', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
-              <div>Fiches totales : {entries.length}</div>
-              <div className="text-indigo-600 font-semibold">Statut : Chiffré de bout en bout</div>
-            </div>
-          </div>
-
-          {/* Grouped Tables */}
-          {groupedEntries.length === 0 ? (
-            <div className="text-center py-12 text-neutral-400 text-xs">
-              Aucune fiche trouvée dans votre coffre-fort.
-            </div>
-          ) : (
-            <div className="space-y-8">
-              {groupedEntries.map((group) => {
-                return (
-                  <div key={group.category.id} className="break-inside-avoid">
-                    {/* Category Label Section */}
-                    <div className="flex items-center gap-2 mb-3 border-b border-neutral-200 pb-1.5">
-                      <div className="w-2.5 h-2.5 rounded-full bg-indigo-600" />
-                      <h3 className="text-xs font-bold text-neutral-800 uppercase tracking-wider font-mono">
-                        {group.category.label} ({group.entries.length})
-                      </h3>
-                    </div>
-
-                    {/* Table of Entries */}
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left border-collapse border border-neutral-200 text-[11px]">
-                        <thead>
-                          <tr className="bg-neutral-50 text-neutral-700 border-b border-neutral-200">
-                            <th className="p-2 border-r border-neutral-200 font-bold w-1/4">Titre / Nom</th>
-                            <th className="p-2 border-r border-neutral-200 font-bold w-1/4">Identifiant / Compte</th>
-                            <th className="p-2 border-r border-neutral-200 font-bold w-1/4">Mot de Passe</th>
-                            <th className="p-2 font-bold w-1/4">Notes & URL / Site</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {group.entries.map((entry) => {
-                            return (
-                              <tr key={entry.id} className="border-b border-neutral-200 hover:bg-neutral-50/50">
-                                {/* Title */}
-                                <td className="p-2 border-r border-neutral-200 font-bold text-neutral-900 capitalize">
-                                  {entry.title}
-                                </td>
-
-                                {/* Username */}
-                                <td className="p-2 border-r border-neutral-200 font-medium text-neutral-700">
-                                  {entry.username || <span className="text-neutral-400 italic font-normal">Aucun</span>}
-                                </td>
-
-                                {/* Password */}
-                                <td className="p-2 border-r border-neutral-200 font-mono">
-                                  {printShowPasswords ? (
-                                    entry.password ? (
-                                      <span className="bg-neutral-50 border border-neutral-150 p-0.5 px-1.5 rounded text-neutral-900 break-all select-all font-bold text-[10px]">
-                                        {entry.password}
-                                      </span>
-                                    ) : (
-                                      <span className="text-neutral-400 italic">Aucun</span>
-                                    )
-                                  ) : (
-                                    <span className="text-neutral-400 tracking-widest text-[8px]">••••••••</span>
-                                  )}
-                                </td>
-
-                                {/* Notes and URL */}
-                                <td className="p-2 text-neutral-600 space-y-1">
-                                  {entry.url && (
-                                    <div className="text-[10px] text-blue-600 truncate max-w-xs font-mono font-medium">
-                                      {entry.url}
-                                    </div>
-                                  )}
-                                  {entry.notes ? (
-                                    <div className="text-[10px] leading-relaxed break-words whitespace-pre-wrap max-w-xs text-neutral-500 italic">
-                                      {entry.notes}
-                                    </div>
-                                  ) : (
-                                    !entry.url && <span className="text-neutral-400 italic">-</span>
-                                  )}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* Document Footer */}
-          <div className="mt-12 pt-4 border-t border-neutral-200 text-center text-[10px] text-neutral-400 flex justify-between items-center font-mono">
-            <div>Document confidentiel • Ne pas partager sans protection</div>
-            <div>Généré via MDP Hors Ligne</div>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   const isAuthScreen = !isConfigured || isLocked;
 
@@ -1194,11 +1438,11 @@ export default function App() {
                   <Search size={18} className="stroke-[2.5]" />
                 </button>
                 <button
-                  onClick={() => setShowPrintMode(true)}
+                  onClick={() => setShowPdfOptionsModal(true)}
                   className="bg-white border border-neutral-200 hover:bg-neutral-100 p-3 text-neutral-700 hover:text-neutral-950 rounded-xl transition-all flex items-center justify-center cursor-pointer shadow-2xs hover:scale-[1.03] active:scale-95"
-                  title="Imprimer / Exporter en PDF"
+                  title="Exporter en PDF"
                 >
-                  <Printer size={18} className="stroke-[2.5] text-indigo-600" />
+                  <Download size={18} className="stroke-[2.5] text-indigo-600" />
                 </button>
                 <button
                   onClick={() => setShowAddForm(true)}
@@ -1738,6 +1982,34 @@ export default function App() {
                 </select>
               </div>
 
+              {/* Backup and Restore Zone */}
+              <div className="pt-3 border-t border-neutral-100 space-y-2.5">
+                <label className="block text-xs font-semibold text-neutral-800">
+                  Sauvegarde & Restauration (JSON)
+                </label>
+                <p className="text-[11px] text-neutral-500 leading-relaxed">
+                  Exportez un fichier de sauvegarde physique sur la mémoire de l'appareil via <code className="bg-neutral-100 px-1 py-0.5 rounded text-[10px] text-indigo-650 font-mono font-bold">cordova-plugin-file</code> ou restaurez-le depuis le sélecteur d'Android.
+                </p>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={handleCordovaBackupExport}
+                    className="bg-neutral-900 hover:bg-neutral-800 text-white font-semibold py-2 px-3 rounded-lg text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-xs"
+                  >
+                    <Download size={13} /> Exporter JSON
+                  </button>
+                  <label className="bg-white border border-neutral-200 hover:bg-neutral-50 text-neutral-700 font-semibold py-2 px-3 rounded-lg text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-2xs text-center border-dashed">
+                    <Upload size={13} className="text-indigo-600" /> Importer JSON
+                    <input
+                      type="file"
+                      accept=".json"
+                      onChange={handleCordovaBackupImport}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+              </div>
+
               {/* Danger zone */}
               <div className="pt-3 border-t border-neutral-100 space-y-2">
                 <label className="block text-xs font-semibold text-red-700">
@@ -1956,6 +2228,58 @@ export default function App() {
           </div>
         )}
       </AnimatePresence>
+
+      {/* ==================== PDF OPTIONS MODAL ==================== */}
+      {showPdfOptionsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-neutral-900/40 backdrop-blur-xs">
+          <div className="bg-white border border-neutral-200 rounded-2xl w-full max-w-sm shadow-xl p-6 space-y-4">
+            <div className="flex items-center gap-2 pb-1 text-neutral-900">
+              <FileText className="w-5 h-5 text-indigo-600" />
+              <h3 className="font-semibold text-sm tracking-tight font-sans">Options d'exportation PDF</h3>
+            </div>
+            
+            <p className="text-xs text-neutral-500 leading-relaxed font-sans">
+              Toutes vos fiches seront classées par ordre de type (catégorie) et présentées sous forme de tableau dans un document PDF structuré.
+            </p>
+
+            <div className="bg-neutral-50 p-3.5 rounded-xl border border-neutral-150 space-y-2 select-none">
+              <label className="flex items-center gap-2.5 cursor-pointer text-xs font-semibold text-neutral-700">
+                <input
+                  type="checkbox"
+                  checked={pdfPasswordsVisible}
+                  onChange={(e) => setPdfPasswordsVisible(e.target.checked)}
+                  className="rounded border-neutral-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+                />
+                <span className="font-sans">Afficher les mots de passe</span>
+              </label>
+              <p className="text-[10px] text-neutral-400 leading-normal pl-6.5 font-sans">
+                Si coché, vos mots de passe seront visibles en clair dans le document généré. Sinon, ils seront masqués par "••••••••".
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowPdfOptionsModal(false)}
+                className="bg-white border border-neutral-200 px-3.5 py-1.5 hover:bg-neutral-100 rounded-lg text-xs font-semibold text-neutral-600 transition-colors cursor-pointer font-sans"
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowPdfOptionsModal(false);
+                  generateAndExportPdf(pdfPasswordsVisible);
+                }}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-1.5 rounded-lg text-xs font-semibold shadow transition-colors cursor-pointer flex items-center gap-1.5 font-sans"
+              >
+                <Download size={13} />
+                Générer le PDF
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ==================== CUSTOM DIALOGS FOR ANDROID WORKAROUNDS ==================== */}
       {confirmModal && confirmModal.isOpen && (

@@ -1,0 +1,27 @@
+<?xml version='1.0' encoding='utf-8'?>
+<widget id="com.mdp.horsligne" version="1.0.0" xmlns="http://www.w3.org/ns/widgets" xmlns:cdv="http://cordova.apache.org/ns/1.0">
+    <name>MDP</name>
+    <description>Gestionnaire de mots de passe 100% hors-ligne, sécurisé localement et optimisé pour l'exportation et l'impression.</description>
+    <author email="FFlorand@gmail.com" href="https://ai.studio/build">
+        FFlorand
+    </author>
+    <content src="index.html" />
+    <access origin="*" />
+    <allow-intent href="http://*/*" />
+    <allow-intent href="https://*/*" />
+    <allow-intent href="tel:*" />
+    <allow-intent href="sms:*" />
+    <allow-intent href="mailto:*" />
+    <allow-intent href="geo:*" />
+
+    <platform name="android">
+        <allow-intent href="market:*" />
+        <preference name="KeepRunning" value="true" />
+        <icon src="public/app_icon.jpg" />
+    </platform>
+
+    <preference name="ScrollEnabled" value="false" />
+    <preference name="DisallowOverscroll" value="true" />
+    <preference name="BackgroundColor" value="#ffffff" />
+    <preference name="Orientation" value="portrait" />
+</widget>
