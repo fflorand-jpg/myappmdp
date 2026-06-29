@@ -733,23 +733,27 @@ export default function App() {
   const openPdfWithFileOpener = (fileUrl: string) => {
     try {
       if (window.cordova.plugins && window.cordova.plugins.fileOpener2) {
-        alert("Diagnostic : Tentative d'ouverture via fileOpener2.open()...");
-        window.cordova.plugins.fileOpener2.open(
-          fileUrl,
-          'application/pdf',
-          {
-            error: (openerErr: any) => {
-              alert("Diagnostic [ERREUR FILEOPENER2] : Impossible d'ouvrir le fichier. " + JSON.stringify(openerErr));
-              showCustomAlert(
-                "Erreur d'ouverture",
-                "Le fichier a été enregistré mais n'a pas pu être ouvert automatiquement. Assurez-vous d'avoir un lecteur PDF d'installé."
-              );
-            },
-            success: () => {
-              alert("Diagnostic : Ouverture réussie avec fileOpener2 !");
+        alert("Diagnostic : Tentative d'ouverture via fileOpener2.open() pour l'URL : " + fileUrl);
+        try {
+          window.cordova.plugins.fileOpener2.open(
+            fileUrl,
+            'application/pdf',
+            {
+              error: (openerErr: any) => {
+                alert("Diagnostic [ERREUR FILEOPENER2 DANS CALLBACK] : Impossible d'ouvrir le fichier. Détails : " + JSON.stringify(openerErr));
+                showCustomAlert(
+                  "Erreur d'ouverture",
+                  "Le fichier a été enregistré mais n'a pas pu être ouvert automatiquement. Assurez-vous d'avoir un lecteur PDF d'installé."
+                );
+              },
+              success: () => {
+                alert("Diagnostic : Ouverture réussie avec fileOpener2 (success) !");
+              }
             }
-          }
-        );
+          );
+        } catch (innerOpenerErr: any) {
+          alert("Diagnostic [ERREUR CRITIQUE FILEOPENER2 APPEL] : Crash lors de l'appel à fileOpener2.open() : " + innerOpenerErr.message);
+        }
       } else {
         alert("Diagnostic [AVERTISSEMENT] : Le plugin fileOpener2 n'est pas disponible ou installé.");
         showCustomAlert("Fichier enregistré", `Le fichier PDF a été sauvegardé avec succès dans le cache local.`);
@@ -801,52 +805,25 @@ export default function App() {
     }
   };
 
-  // Fallback to resolveLocalFileSystemURL
-  const fallbackToResolveLocalFileSystemURL = (arrayBuffer: ArrayBuffer, fileName: string) => {
-    try {
-      if (!window.resolveLocalFileSystemURL) {
-        alert("Diagnostic [ERREUR CRITIQUE] : resolveLocalFileSystemURL n'est pas disponible !");
-        return;
-      }
-      const storageDir = window.cordova.file.cacheDirectory || window.cordova.file.externalCacheDirectory || window.cordova.file.dataDirectory;
-      alert("Diagnostic [FALLBACK] : Résolution du dossier de cache par URL : " + storageDir);
-      
-      window.resolveLocalFileSystemURL(storageDir, (dirEntry: any) => {
-        alert("Diagnostic [FALLBACK] : resolveLocalFileSystemURL réussi !");
-        writeArrayBufferToDirEntry(dirEntry, arrayBuffer, fileName);
-      }, (resolveErr: any) => {
-        alert("Diagnostic [ERREUR RESOLVE FALLBACK] : Échec de la résolution de l'URL : " + JSON.stringify(resolveErr));
-      });
-    } catch (fallbackErr: any) {
-      alert("Diagnostic [ERREUR INTERNE FALLBACK] : " + fallbackErr.message);
-    }
-  };
-
   // Cordova Native helper to save an ArrayBuffer as a file and open it using Cordova plugins
   const saveAndOpenPdfCordova = (arrayBuffer: ArrayBuffer, fileName: string) => {
     try {
-      alert("Diagnostic : Entrée dans saveAndOpenPdfCordova. Taille du fichier : " + arrayBuffer.byteLength + " octets.");
+      alert("Diagnostic : Entrée dans saveAndOpenPdfCordova (Cache privé). Taille du fichier : " + arrayBuffer.byteLength + " octets.");
       
-      const proceedWithFileSystem = () => {
-        alert("Diagnostic : Tentative d'utilisation de window.requestFileSystem (TEMPORARY)...");
-        const requestFS = (window as any).requestFileSystem || (window as any).webkitRequestFileSystem;
-        
-        if (requestFS) {
-          const type = (window as any).TEMPORARY !== undefined ? (window as any).TEMPORARY : 0;
-          requestFS(type, 0, (fs: any) => {
-            alert("Diagnostic : requestFileSystem réussi ! Racine : " + fs.root.toURL());
-            writeArrayBufferToDirEntry(fs.root, arrayBuffer, fileName);
-          }, (fsErr: any) => {
-            alert("Diagnostic [AVERTISSEMENT] : requestFileSystem a échoué : " + JSON.stringify(fsErr) + ". Tentative via resolveLocalFileSystemURL...");
-            fallbackToResolveLocalFileSystemURL(arrayBuffer, fileName);
-          });
-        } else {
-          alert("Diagnostic [INFO] : requestFileSystem non disponible. Tentative via resolveLocalFileSystemURL...");
-          fallbackToResolveLocalFileSystemURL(arrayBuffer, fileName);
-        }
-      };
+      if (!window.cordova || !window.resolveLocalFileSystemURL) {
+        alert("Diagnostic [ERREUR CRITIQUE] : Les plugins Cordova File API ne sont pas disponibles (resolveLocalFileSystemURL ou window.cordova introuvable).");
+        return;
+      }
 
-      requestStoragePermissions(proceedWithFileSystem);
+      const cacheDir = window.cordova.file.cacheDirectory || window.cordova.file.dataDirectory;
+      alert("Diagnostic : Résolution directe du dossier cache privé : " + cacheDir);
+
+      window.resolveLocalFileSystemURL(cacheDir, (dirEntry: any) => {
+        alert("Diagnostic : Résolution réussie du dossier de cache privé !");
+        writeArrayBufferToDirEntry(dirEntry, arrayBuffer, fileName);
+      }, (resolveErr: any) => {
+        alert("Diagnostic [ERREUR RESOLVE] : Échec de la résolution de l'URL du cache : " + JSON.stringify(resolveErr));
+      });
 
     } catch (e: any) {
       alert("Erreur globale saveAndOpenPdfCordova: " + e.message);
