@@ -686,100 +686,168 @@ export default function App() {
     localStorage.setItem('vault_autolock_minutes', mins.toString());
   };
 
-  // Cordova Native helper to save a blob as a file and open it using Cordova plugins
-  const saveAndOpenPdfCordova = (blob: Blob, fileName: string) => {
+  // Helper to request Android storage permissions
+  const requestStoragePermissions = (callback: () => void) => {
     try {
-      if (!window.cordova || !window.resolveLocalFileSystemURL) {
-        console.error("Cordova File API standard is not loaded.");
-        alert("Diagnostic [ERREUR] : Les plugins Cordova File API ne sont pas disponibles (resolveLocalFileSystemURL ou window.cordova introuvable).");
-        showCustomAlert("Erreur de stockage", "Le plugin Cordova File n'est pas prêt.");
+      alert("Diagnostic : Vérification des permissions de stockage...");
+      const permissions = (window as any).cordova?.plugins?.permissions;
+      if (permissions) {
+        const list = [
+          permissions.WRITE_EXTERNAL_STORAGE,
+          permissions.READ_EXTERNAL_STORAGE
+        ];
+        permissions.hasPermission(permissions.WRITE_EXTERNAL_STORAGE, (status: any) => {
+          if (status.hasPermission) {
+            alert("Diagnostic : Permission WRITE_EXTERNAL_STORAGE déjà accordée !");
+            callback();
+          } else {
+            alert("Diagnostic : Demande de permission WRITE_EXTERNAL_STORAGE...");
+            permissions.requestPermissions(list, (status: any) => {
+              if (status.hasPermission) {
+                alert("Diagnostic : Permission accordée par l'utilisateur !");
+                callback();
+              } else {
+                alert("Diagnostic [ATTENTION] : Permission refusée. Tentative de poursuite malgré tout...");
+                callback();
+              }
+            }, () => {
+              alert("Diagnostic [ERREUR PERMISSION] : Échec de la demande. Tentative de poursuite...");
+              callback();
+            });
+          }
+        }, () => {
+          alert("Diagnostic [ERREUR HAS_PERMISSION] : Impossible de vérifier. Tentative de poursuite...");
+          callback();
+        });
+      } else {
+        alert("Diagnostic [INFO] : Plugin de permissions non détecté ou indisponible. Poursuite directe...");
+        callback();
+      }
+    } catch (err: any) {
+      alert("Diagnostic [ERREUR EXCEPTION PERMISSION] : " + err.message + ". Poursuite directe...");
+      callback();
+    }
+  };
+
+  // Helper to open PDF with file opener
+  const openPdfWithFileOpener = (fileUrl: string) => {
+    try {
+      if (window.cordova.plugins && window.cordova.plugins.fileOpener2) {
+        alert("Diagnostic : Tentative d'ouverture via fileOpener2.open()...");
+        window.cordova.plugins.fileOpener2.open(
+          fileUrl,
+          'application/pdf',
+          {
+            error: (openerErr: any) => {
+              alert("Diagnostic [ERREUR FILEOPENER2] : Impossible d'ouvrir le fichier. " + JSON.stringify(openerErr));
+              showCustomAlert(
+                "Erreur d'ouverture",
+                "Le fichier a été enregistré mais n'a pas pu être ouvert automatiquement. Assurez-vous d'avoir un lecteur PDF d'installé."
+              );
+            },
+            success: () => {
+              alert("Diagnostic : Ouverture réussie avec fileOpener2 !");
+            }
+          }
+        );
+      } else {
+        alert("Diagnostic [AVERTISSEMENT] : Le plugin fileOpener2 n'est pas disponible ou installé.");
+        showCustomAlert("Fichier enregistré", `Le fichier PDF a été sauvegardé avec succès dans le cache local.`);
+      }
+    } catch (openerCatch: any) {
+      alert("Diagnostic [ERREUR EXCEPTION FILEOPENER] : " + openerCatch.message);
+    }
+  };
+
+  // Helper to write an ArrayBuffer to a directory entry
+  const writeArrayBufferToDirEntry = (dirEntry: any, arrayBuffer: ArrayBuffer, fileName: string) => {
+    try {
+      alert("Diagnostic : Accès au fichier '" + fileName + "' dans le dossier...");
+      dirEntry.getFile(fileName, { create: true, exclusive: false }, (fileEntry: any) => {
+        try {
+          alert("Diagnostic : Fichier créé/résolu avec succès : " + fileEntry.toURL() + ". Initialisation de l'écrivain (createWriter)...");
+          fileEntry.createWriter((fileWriter: any) => {
+            try {
+              fileWriter.onwriteend = () => {
+                try {
+                  alert("Diagnostic : Succès ! Le PDF a été écrit avec succès dans : " + fileEntry.toURL());
+                  openPdfWithFileOpener(fileEntry.toURL());
+                } catch (onWriteEndErr: any) {
+                  alert("Diagnostic [ERREUR ONWRITEEND CATCH] : " + (onWriteEndErr?.message || String(onWriteEndErr)));
+                }
+              };
+
+              fileWriter.onerror = (writeErr: any) => {
+                alert("Diagnostic [ERREUR ECRITURE] : Échec d'écriture du fichier : " + JSON.stringify(writeErr));
+              };
+
+              alert("Diagnostic : Début de l'écriture de l'ArrayBuffer...");
+              fileWriter.write(arrayBuffer);
+              alert("Diagnostic : fileWriter.write() appelé ! Attente de onwriteend...");
+            } catch (writerInnerErr: any) {
+              alert("Diagnostic [ERREUR INTERNE WRITER] : " + writerInnerErr.message);
+            }
+          }, (writerErr: any) => {
+            alert("Diagnostic [ERREUR CREATEWRITER] : Impossible d'obtenir le fileWriter : " + JSON.stringify(writerErr));
+          });
+        } catch (fileEntryErr: any) {
+          alert("Diagnostic [ERREUR INTERNE FILEENTRY] : " + fileEntryErr.message);
+        }
+      }, (getFileErr: any) => {
+        alert("Diagnostic [ERREUR GETFILE] : Impossible de résoudre/créer le fichier : " + JSON.stringify(getFileErr));
+      });
+    } catch (dirEntryErr: any) {
+      alert("Diagnostic [ERREUR INTERNE DIRENTRY] : " + dirEntryErr.message);
+    }
+  };
+
+  // Fallback to resolveLocalFileSystemURL
+  const fallbackToResolveLocalFileSystemURL = (arrayBuffer: ArrayBuffer, fileName: string) => {
+    try {
+      if (!window.resolveLocalFileSystemURL) {
+        alert("Diagnostic [ERREUR CRITIQUE] : resolveLocalFileSystemURL n'est pas disponible !");
         return;
       }
-
-      // Use standard cache directory since it is private and accessible for opening
       const storageDir = window.cordova.file.cacheDirectory || window.cordova.file.externalCacheDirectory || window.cordova.file.dataDirectory;
-      alert("Diagnostic : Dossier de stockage cible : " + storageDir);
-
-      alert("Diagnostic : Appel imminent de window.resolveLocalFileSystemURL...");
+      alert("Diagnostic [FALLBACK] : Résolution du dossier de cache par URL : " + storageDir);
+      
       window.resolveLocalFileSystemURL(storageDir, (dirEntry: any) => {
-        try {
-          alert("Diagnostic : Résolution réussie pour le stockage local (resolveLocalFileSystemURL callback). Accès au fichier " + fileName + "...");
-          dirEntry.getFile(fileName, { create: true, exclusive: false }, (fileEntry: any) => {
-            try {
-              alert("Diagnostic : Fichier créé/trouvé avec succès. Préparation de l'écriture (createWriter)...");
-              fileEntry.createWriter((fileWriter: any) => {
-                try {
-                  fileWriter.onwriteend = () => {
-                    try {
-                      alert("Diagnostic : PDF enregistré avec succès dans le stockage local à l'adresse :\n" + fileEntry.toURL());
-                      
-                      // Open the file with cordova-plugin-file-opener2
-                      if (window.cordova.plugins && window.cordova.plugins.fileOpener2) {
-                        alert("Diagnostic : Tentative d'ouverture du PDF avec cordova-plugin-file-opener2.open()...");
-                        window.cordova.plugins.fileOpener2.open(
-                          fileEntry.toURL(),
-                          'application/pdf',
-                          {
-                            error: (err: any) => {
-                              console.error("Erreur d'ouverture via fileOpener2: ", err);
-                              alert("Diagnostic [ERREUR FILEOPENER2] : Impossible d'ouvrir le PDF. Détails de l'erreur : " + JSON.stringify(err));
-                              showCustomAlert(
-                                "Erreur d'ouverture", 
-                                "Fichier enregistré mais impossible d'ouvrir le PDF automatiquement. Veuillez vérifier que vous avez un lecteur PDF installé sur votre appareil Android."
-                              );
-                            },
-                            success: () => {
-                              alert("Diagnostic : Le PDF a été ouvert avec succès via fileOpener2 (success callback) !");
-                              console.log("PDF ouvert avec succès via fileOpener2 !");
-                            }
-                          }
-                        );
-                      } else {
-                        alert("Diagnostic [ATTENTION] : Le plugin fileOpener2 est manquant ou non disponible sur l'appareil.");
-                        console.warn("Le plugin fileOpener2 n'est pas disponible.");
-                        showCustomAlert(
-                          "Fichier enregistré", 
-                          `Votre PDF a été enregistré avec succès sous ${fileName} dans le cache local.`
-                        );
-                      }
-                    } catch (onWriteEndErr: any) {
-                      alert("Diagnostic [ERREUR ONWRITEEND CATCH] : " + (onWriteEndErr?.message || String(onWriteEndErr)));
-                    }
-                  };
-
-                  fileWriter.onerror = (e: any) => {
-                    console.error("Erreur d'écriture du fichier: ", e);
-                    alert("Diagnostic [ERREUR ECRITURE] : Échec de l'écriture du fichier. " + JSON.stringify(e));
-                    showCustomAlert("Erreur d'enregistrement", "Échec de l'écriture physique du fichier.");
-                  };
-
-                  alert("Diagnostic : Appel de fileWriter.write(blob) imminent...");
-                  fileWriter.write(blob);
-                  alert("Diagnostic : fileWriter.write(blob) appelé ! Attente de onwriteend...");
-                } catch (writerErr: any) {
-                  alert("Diagnostic [ERREUR WRITER CATCH] : " + (writerErr?.message || String(writerErr)));
-                }
-              }, (err: any) => {
-                console.error("Erreur de création de fileWriter: ", err);
-                alert("Diagnostic [ERREUR CREATEWRITER] : " + JSON.stringify(err));
-                showCustomAlert("Erreur technique", "Impossible d'initialiser le gestionnaire d'écriture.");
-              });
-            } catch (getFileInnerErr: any) {
-              alert("Diagnostic [ERREUR GETFILE INNER CATCH] : " + (getFileInnerErr?.message || String(getFileInnerErr)));
-            }
-          }, (err: any) => {
-            console.error("Erreur getFile: ", err);
-            alert("Diagnostic [ERREUR GETFILE] : " + JSON.stringify(err));
-            showCustomAlert("Erreur d'accès", "Impossible de créer le fichier d'exportation.");
-          });
-        } catch (resolveInnerErr: any) {
-          alert("Diagnostic [ERREUR RESOLVE INNER CATCH] : " + (resolveInnerErr?.message || String(resolveInnerErr)));
-        }
-      }, (err: any) => {
-        console.error("Erreur resolveLocalFileSystemURL: ", err);
-        alert("Diagnostic [ERREUR RESOLVE] : Impossible de résoudre l'adresse du dossier de cache. " + JSON.stringify(err));
-        showCustomAlert("Erreur d'accès", "Impossible de résoudre le dossier de stockage local de l'application.");
+        alert("Diagnostic [FALLBACK] : resolveLocalFileSystemURL réussi !");
+        writeArrayBufferToDirEntry(dirEntry, arrayBuffer, fileName);
+      }, (resolveErr: any) => {
+        alert("Diagnostic [ERREUR RESOLVE FALLBACK] : Échec de la résolution de l'URL : " + JSON.stringify(resolveErr));
       });
+    } catch (fallbackErr: any) {
+      alert("Diagnostic [ERREUR INTERNE FALLBACK] : " + fallbackErr.message);
+    }
+  };
+
+  // Cordova Native helper to save an ArrayBuffer as a file and open it using Cordova plugins
+  const saveAndOpenPdfCordova = (arrayBuffer: ArrayBuffer, fileName: string) => {
+    try {
+      alert("Diagnostic : Entrée dans saveAndOpenPdfCordova. Taille du fichier : " + arrayBuffer.byteLength + " octets.");
+      
+      const proceedWithFileSystem = () => {
+        alert("Diagnostic : Tentative d'utilisation de window.requestFileSystem (TEMPORARY)...");
+        const requestFS = (window as any).requestFileSystem || (window as any).webkitRequestFileSystem;
+        
+        if (requestFS) {
+          const type = (window as any).TEMPORARY !== undefined ? (window as any).TEMPORARY : 0;
+          requestFS(type, 0, (fs: any) => {
+            alert("Diagnostic : requestFileSystem réussi ! Racine : " + fs.root.toURL());
+            writeArrayBufferToDirEntry(fs.root, arrayBuffer, fileName);
+          }, (fsErr: any) => {
+            alert("Diagnostic [AVERTISSEMENT] : requestFileSystem a échoué : " + JSON.stringify(fsErr) + ". Tentative via resolveLocalFileSystemURL...");
+            fallbackToResolveLocalFileSystemURL(arrayBuffer, fileName);
+          });
+        } else {
+          alert("Diagnostic [INFO] : requestFileSystem non disponible. Tentative via resolveLocalFileSystemURL...");
+          fallbackToResolveLocalFileSystemURL(arrayBuffer, fileName);
+        }
+      };
+
+      requestStoragePermissions(proceedWithFileSystem);
+
     } catch (e: any) {
       alert("Erreur globale saveAndOpenPdfCordova: " + e.message);
     }
@@ -964,15 +1032,26 @@ export default function App() {
         document.addEventListener('deviceready', () => {
           devicereadyFired = true;
           clearTimeout(readyTimeout);
-          alert("Diagnostic : Événement 'deviceready' reçu avec succès ! Récupération du Blob PDF...");
+          alert("Diagnostic : Événement 'deviceready' reçu avec succès ! Récupération du Base64 du PDF...");
           
           try {
-            (pdfDocGenerator as any).getBlob((blob: any) => {
-              alert("Diagnostic : Blob PDF récupéré avec succès ! Transmission au système de fichier...");
-              saveAndOpenPdfCordova(blob, fileName);
+            (pdfDocGenerator as any).getBase64((base64String: string) => {
+              try {
+                alert("Diagnostic : Base64 PDF récupéré avec succès (" + base64String.length + " caractères) ! Conversion en ArrayBuffer...");
+                const binaryString = window.atob(base64String);
+                const len = binaryString.length;
+                const bytes = new Uint8Array(len);
+                for (let i = 0; i < len; i++) {
+                  bytes[i] = binaryString.charCodeAt(i);
+                }
+                alert("Diagnostic : Conversion ArrayBuffer réussie (" + bytes.length + " octets). Transmission au système de fichier...");
+                saveAndOpenPdfCordova(bytes.buffer, fileName);
+              } catch (convErr: any) {
+                alert("Diagnostic [ERREUR CONVERSION BASE64] : " + convErr.message);
+              }
             });
-          } catch (blobErr: any) {
-            alert("Diagnostic [ERREUR GETBLOB] : La récupération du Blob PDF a échoué. " + (blobErr?.message || String(blobErr)));
+          } catch (pdfMakeErr: any) {
+            alert("Diagnostic [ERREUR GETBASE64] : La génération ou récupération Base64 du PDF a échoué. " + (pdfMakeErr?.message || String(pdfMakeErr)));
           }
         }, false);
       } else {
