@@ -1,5 +1,5 @@
 <?xml version='1.0' encoding='utf-8'?>
-<widget id="com.mdp.horsligne" version="1.0.1" xmlns="http://www.w3.org/ns/widgets" xmlns:cdv="http://cordova.apache.org/ns/1.0">
+<widget id="com.mdp.horsligne" version="1.0.0" xmlns="http://www.w3.org/ns/widgets" xmlns:cdv="http://cordova.apache.org/ns/1.0">
     <name>MDP</name>
     <description>Gestionnaire de mots de passe 100% hors-ligne, sécurisé localement et optimisé pour l'exportation et l'impression.</description>
     <author email="FFlorand@gmail.com" href="https://ai.studio/build">
@@ -24,14 +24,4 @@
     <preference name="DisallowOverscroll" value="true" />
     <preference name="BackgroundColor" value="#ffffff" />
     <preference name="Orientation" value="portrait" />
-
-  <plugin name="cordova-plugin-file" spec="^8.1.0" />
-    <plugin name="cordova-plugin-file-opener2" spec="^4.0.0" />
-
-      <platform name="android">
-          <config-file parent="/*" target="AndroidManifest.xml">
-                <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
-                      <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
-                          </config-file>
-                            </platform>
 </widget>

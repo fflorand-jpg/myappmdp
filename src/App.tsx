@@ -42,8 +42,6 @@ import { PasswordEntry, Category } from './types';
 import { encryptData, decryptData, generateCanary, verifyCanary } from './lib/crypto';
 import EntryForm from './components/EntryForm';
 
-import pdfMake from 'pdfmake/build/pdfmake';
-import pdfFonts from 'pdfmake/build/vfs_fonts';
 
 declare global {
   interface Window {
@@ -53,10 +51,6 @@ declare global {
   }
 }
 
-// Initialize pdfMake virtual fonts
-if (pdfFonts && (pdfFonts as any).pdfMake) {
-  (pdfMake as any).vfs = (pdfFonts as any).pdfMake.vfs;
-}
 
 export interface CustomCategory {
   id: string;
@@ -281,8 +275,6 @@ export default function App() {
   const [editingEntry, setEditingEntry] = useState<PasswordEntry | null>(null);
   const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
   const [showSidebarMenu, setShowSidebarMenu] = useState<boolean>(false);
-  const [showPdfOptionsModal, setShowPdfOptionsModal] = useState<boolean>(false);
-  const [pdfPasswordsVisible, setPdfPasswordsVisible] = useState<boolean>(true);
 
   // Custom non-blocking dialog states (confirm & prompt) for reliable execution on Android Webviews
   const [confirmModal, setConfirmModal] = useState<{
@@ -729,322 +721,56 @@ export default function App() {
     }
   };
 
-  // Helper to open PDF with file opener
-  const openPdfWithFileOpener = (fileUrl: string) => {
-    try {
-      if (window.cordova.plugins && window.cordova.plugins.fileOpener2) {
-        alert("Diagnostic : Tentative d'ouverture via fileOpener2.open() pour l'URL : " + fileUrl);
-        try {
-          window.cordova.plugins.fileOpener2.open(
-            fileUrl,
-            'application/pdf',
-            {
-              error: (openerErr: any) => {
-                alert("Diagnostic [ERREUR FILEOPENER2 DANS CALLBACK] : Impossible d'ouvrir le fichier. Détails : " + JSON.stringify(openerErr));
-                showCustomAlert(
-                  "Erreur d'ouverture",
-                  "Le fichier a été enregistré mais n'a pas pu être ouvert automatiquement. Assurez-vous d'avoir un lecteur PDF d'installé."
-                );
-              },
-              success: () => {
-                alert("Diagnostic : Ouverture réussie avec fileOpener2 (success) !");
-              }
-            }
-          );
-        } catch (innerOpenerErr: any) {
-          alert("Diagnostic [ERREUR CRITIQUE FILEOPENER2 APPEL] : Crash lors de l'appel à fileOpener2.open() : " + innerOpenerErr.message);
-        }
-      } else {
-        alert("Diagnostic [AVERTISSEMENT] : Le plugin fileOpener2 n'est pas disponible ou installé.");
-        showCustomAlert("Fichier enregistré", `Le fichier PDF a été sauvegardé avec succès dans le cache local.`);
-      }
-    } catch (openerCatch: any) {
-      alert("Diagnostic [ERREUR EXCEPTION FILEOPENER] : " + openerCatch.message);
+
+  const exportSecretsToHtml = () => {
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Exportation des Secrets</title>
+        <style>
+          body { font-family: sans-serif; padding: 20px; }
+          table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+          th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+          th { background-color: #f2f2f2; }
+          h1 { text-align: center; }
+        </style>
+      </head>
+      <body>
+        <h1>Mes Secrets</h1>
+        ${categories.map(cat => {
+          const catEntries = entries.filter(e => e.category === cat.id);
+          if (catEntries.length === 0) return '';
+          return `
+            <h2>${cat.label}</h2>
+            <table>
+              <thead>
+                <tr><th>Titre</th><th>Identifiant</th><th>Mot de passe</th></tr>
+              </thead>
+              <tbody>
+                ${catEntries.map(e => `
+                  <tr><td>${e.title}</td><td>${e.username}</td><td>${e.password}</td></tr>
+                `).join('')}
+              </tbody>
+            </table>
+          `;
+        }).join('')}
+        <script>
+          window.onload = function() {
+            window.print();
+          };
+        </script>
+      </body>
+      </html>
+    `;
+    const newWindow = window.open('', '_blank');
+    if (newWindow) {
+      newWindow.document.write(htmlContent);
+      newWindow.document.close();
+      newWindow.focus();
     }
   };
 
-  // Helper to write an ArrayBuffer to a directory entry
-  const writeArrayBufferToDirEntry = (dirEntry: any, arrayBuffer: ArrayBuffer, fileName: string) => {
-    try {
-      alert("Diagnostic : Accès au fichier '" + fileName + "' dans le dossier...");
-      dirEntry.getFile(fileName, { create: true, exclusive: false }, (fileEntry: any) => {
-        try {
-          alert("Diagnostic : Fichier créé/résolu avec succès : " + fileEntry.toURL() + ". Initialisation de l'écrivain (createWriter)...");
-          fileEntry.createWriter((fileWriter: any) => {
-            try {
-              fileWriter.onwriteend = () => {
-                try {
-                  alert("Diagnostic : Succès ! Le PDF a été écrit avec succès dans : " + fileEntry.toURL());
-                  openPdfWithFileOpener(fileEntry.toURL());
-                } catch (onWriteEndErr: any) {
-                  alert("Diagnostic [ERREUR ONWRITEEND CATCH] : " + (onWriteEndErr?.message || String(onWriteEndErr)));
-                }
-              };
-
-              fileWriter.onerror = (writeErr: any) => {
-                alert("Diagnostic [ERREUR ECRITURE] : Échec d'écriture du fichier : " + JSON.stringify(writeErr));
-              };
-
-              alert("Diagnostic : Début de l'écriture de l'ArrayBuffer...");
-              fileWriter.write(arrayBuffer);
-              alert("Diagnostic : fileWriter.write() appelé ! Attente de onwriteend...");
-            } catch (writerInnerErr: any) {
-              alert("Diagnostic [ERREUR INTERNE WRITER] : " + writerInnerErr.message);
-            }
-          }, (writerErr: any) => {
-            alert("Diagnostic [ERREUR CREATEWRITER] : Impossible d'obtenir le fileWriter : " + JSON.stringify(writerErr));
-          });
-        } catch (fileEntryErr: any) {
-          alert("Diagnostic [ERREUR INTERNE FILEENTRY] : " + fileEntryErr.message);
-        }
-      }, (getFileErr: any) => {
-        alert("Diagnostic [ERREUR GETFILE] : Impossible de résoudre/créer le fichier : " + JSON.stringify(getFileErr));
-      });
-    } catch (dirEntryErr: any) {
-      alert("Diagnostic [ERREUR INTERNE DIRENTRY] : " + dirEntryErr.message);
-    }
-  };
-
-  // Cordova Native helper to save an ArrayBuffer as a file and open it using Cordova plugins
-  const saveAndOpenPdfCordova = (arrayBuffer: ArrayBuffer, fileName: string) => {
-    try {
-      alert("Diagnostic : Entrée dans saveAndOpenPdfCordova (Cache privé). Taille du fichier : " + arrayBuffer.byteLength + " octets.");
-      
-      if (!window.cordova || !window.resolveLocalFileSystemURL) {
-        alert("Diagnostic [ERREUR CRITIQUE] : Les plugins Cordova File API ne sont pas disponibles (resolveLocalFileSystemURL ou window.cordova introuvable).");
-        return;
-      }
-
-      const cacheDir = window.cordova.file.cacheDirectory || window.cordova.file.dataDirectory;
-      alert("Diagnostic : Résolution directe du dossier cache privé : " + cacheDir);
-
-      window.resolveLocalFileSystemURL(cacheDir, (dirEntry: any) => {
-        alert("Diagnostic : Résolution réussie du dossier de cache privé !");
-        writeArrayBufferToDirEntry(dirEntry, arrayBuffer, fileName);
-      }, (resolveErr: any) => {
-        alert("Diagnostic [ERREUR RESOLVE] : Échec de la résolution de l'URL du cache : " + JSON.stringify(resolveErr));
-      });
-
-    } catch (e: any) {
-      alert("Erreur globale saveAndOpenPdfCordova: " + e.message);
-    }
-  };
-
-  // Main pdfMake builder & generator
-  const generateAndExportPdf = (showPasswords: boolean) => {
-    // 1. Group entries by their type (category), then alphabetically by title
-    const groupedEntries = categories.map(cat => {
-      const catEntries = entries
-        .filter(e => e.category === cat.id)
-        .sort((a, b) => a.title.localeCompare(b.title));
-      return {
-        category: cat,
-        entries: catEntries
-      };
-    }).filter(group => group.entries.length > 0);
-
-    const extraEntries = entries
-      .filter(e => !categories.some(c => c.id === e.category))
-      .sort((a, b) => a.title.localeCompare(b.title));
-    
-    if (extraEntries.length > 0) {
-      groupedEntries.push({
-        category: { id: 'other', label: 'Autres fiches / Notes', color: 'slate' },
-        entries: extraEntries
-      });
-    }
-
-    // 2. Build the PDF content definition
-    const pdfContent: any[] = [
-      { text: "Rapport de Sauvegarde des Codes d'Accès", style: 'header', alignment: 'center' },
-      { 
-        text: `Généré en toute sécurité le ${new Date().toLocaleDateString('fr-FR', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`, 
-        style: 'subheader',
-        alignment: 'center'
-      },
-      { text: `Fiches totales : ${entries.length} | Statut : Chiffré en local`, style: 'info', alignment: 'center' },
-      { canvas: [{ type: 'line', x1: 0, y1: 5, x2: 515, y2: 5, lineWidth: 1.5, color: '#1f2937' }] },
-      { text: ' ', margin: [0, 8] }
-    ];
-
-    if (groupedEntries.length === 0) {
-      pdfContent.push({ text: 'Aucune fiche trouvée dans votre coffre-fort.', style: 'emptyText' });
-    } else {
-      groupedEntries.forEach((group) => {
-        // Group heading (Category)
-        pdfContent.push({
-          text: `${group.category.label.toUpperCase()} (${group.entries.length})`,
-          style: 'categoryHeader',
-          margin: [0, 15, 0, 6]
-        });
-
-        // Create table
-        const tableBody: any[] = [];
-        // Add headers
-        tableBody.push([
-          { text: 'Titre / Nom', style: 'tableHeader' },
-          { text: 'Identifiant / Compte', style: 'tableHeader' },
-          { text: 'Mot de Passe', style: 'tableHeader' },
-          { text: 'Notes & URL / Site', style: 'tableHeader' }
-        ]);
-
-        // Add rows
-        group.entries.forEach((entry) => {
-          const titleVal = entry.title || '';
-          const userVal = entry.username || '-';
-          const passVal = showPasswords ? (entry.password || '-') : '••••••••';
-          
-          const details: any[] = [];
-          if (entry.url) {
-            details.push({ text: entry.url + '\n', color: '#2563eb', fontSize: 8 });
-          }
-          if (entry.notes) {
-            details.push({ text: entry.notes, fontStyle: 'italic', color: '#4b5563', fontSize: 8 });
-          }
-          if (details.length === 0) {
-            details.push({ text: '-', color: '#9ca3af' });
-          }
-
-          tableBody.push([
-            { text: titleVal, bold: true },
-            { text: userVal },
-            { text: passVal, color: showPasswords ? '#b91c1c' : '#4b5563', bold: showPasswords },
-            { text: details }
-          ]);
-        });
-
-        pdfContent.push({
-          table: {
-            headerRows: 1,
-            widths: ['25%', '25%', '22%', '28%'],
-            body: tableBody
-          },
-          layout: {
-            hLineWidth: (i: number, node: any) => (i === 0 || i === node.table.body.length) ? 1.5 : 0.5,
-            vLineWidth: (i: number, node: any) => (i === 0 || i === node.table.widths.length) ? 1.5 : 0.5,
-            hLineColor: () => '#d1d5db',
-            vLineColor: () => '#e5e7eb',
-            paddingLeft: () => 6,
-            paddingRight: () => 6,
-            paddingTop: () => 5,
-            paddingBottom: () => 5,
-          }
-        });
-      });
-    }
-
-    // Document footer lines
-    pdfContent.push({
-      text: '\n\nDocument confidentiel • Ne pas partager sans protection\nFichier de tableur généré via l\'application MDP Hors Ligne en local.',
-      style: 'footerText',
-      alignment: 'center'
-    });
-
-    const docDefinition: any = {
-      content: pdfContent,
-      styles: {
-        header: {
-          fontSize: 15,
-          bold: true,
-          color: '#111827',
-          margin: [0, 0, 0, 2]
-        },
-        subheader: {
-          fontSize: 9,
-          color: '#4b5563',
-          margin: [0, 0, 0, 2]
-        },
-        info: {
-          fontSize: 8.5,
-          color: '#4f46e5',
-          bold: true,
-          margin: [0, 0, 0, 6]
-        },
-        categoryHeader: {
-          fontSize: 10,
-          bold: true,
-          color: '#374151',
-          keepWithNext: true
-        },
-        tableHeader: {
-          bold: true,
-          fontSize: 9,
-          color: '#111827',
-          fillColor: '#f9fafb'
-        },
-        emptyText: {
-          fontSize: 10,
-          fontStyle: 'italic',
-          color: '#9ca3af',
-          alignment: 'center',
-          margin: [0, 25, 0, 25]
-        },
-        footerText: {
-          fontSize: 8,
-          color: '#9ca3af'
-        }
-      },
-      defaultStyle: {
-        fontSize: 8.5
-      }
-    };
-
-    const fileName = `mdp_coffre_sauvegarde_${new Date().toISOString().slice(0, 10)}.pdf`;
-
-    try {
-      alert("Diagnostic : Déclenchement de la génération de PDF...");
-      const pdfDocGenerator = pdfMake.createPdf(docDefinition);
-
-      if (window.cordova) {
-        alert("Diagnostic : window.cordova détecté ! Enregistrement de l'écouteur d'événement 'deviceready'...");
-        let devicereadyFired = false;
-        
-        // Setup timeout to warn if deviceready is not firing
-        const readyTimeout = setTimeout(() => {
-          if (!devicereadyFired) {
-            alert("Diagnostic [ERREUR] : L'événement 'deviceready' ne s'est pas lancé dans les 3 secondes. Les plugins Cordova risquent d'être inactifs.");
-          }
-        }, 3000);
-
-        document.addEventListener('deviceready', () => {
-          devicereadyFired = true;
-          clearTimeout(readyTimeout);
-          alert("Diagnostic : Événement 'deviceready' reçu avec succès ! Récupération du Base64 du PDF...");
-          
-          try {
-            (pdfDocGenerator as any).getBase64((base64String: string) => {
-              try {
-                alert("Diagnostic : Base64 PDF récupéré avec succès (" + base64String.length + " caractères) ! Conversion en ArrayBuffer...");
-                const binaryString = window.atob(base64String);
-                const len = binaryString.length;
-                const bytes = new Uint8Array(len);
-                for (let i = 0; i < len; i++) {
-                  bytes[i] = binaryString.charCodeAt(i);
-                }
-                alert("Diagnostic : Conversion ArrayBuffer réussie (" + bytes.length + " octets). Transmission au système de fichier...");
-                saveAndOpenPdfCordova(bytes.buffer, fileName);
-              } catch (convErr: any) {
-                alert("Diagnostic [ERREUR CONVERSION BASE64] : " + convErr.message);
-              }
-            });
-          } catch (pdfMakeErr: any) {
-            alert("Diagnostic [ERREUR GETBASE64] : La génération ou récupération Base64 du PDF a échoué. " + (pdfMakeErr?.message || String(pdfMakeErr)));
-          }
-        }, false);
-      } else {
-        alert("Diagnostic [INFO] : window.cordova n'est pas détecté. Mode de secours (téléchargement par navigateur) activé.");
-        pdfDocGenerator.download(fileName);
-        showCustomAlert('Rapport PDF Généré', 'Le PDF trié par catégorie a été généré et téléchargé avec succès !');
-      }
-    } catch (err: any) {
-      console.error("Erreur de génération pdfMake:", err);
-      const exactErrorMsg = err instanceof Error ? err.message : String(err);
-      alert("Diagnostic [ERREUR CRITIQUE] : La génération du PDF a planté.\nErreur exacte : " + exactErrorMsg);
-      showCustomAlert("Erreur", "Impossible de générer le fichier PDF. " + exactErrorMsg);
-    }
-  };
-
-  // Cordova Backup & Export Handlers (JSON Format via cordova-plugin-file)
   const handleCordovaBackupExport = () => {
     try {
       const backupData = {
@@ -1559,11 +1285,11 @@ export default function App() {
                   <Search size={18} className="stroke-[2.5]" />
                 </button>
                 <button
-                  onClick={() => setShowPdfOptionsModal(true)}
+                  onClick={exportSecretsToHtml}
                   className="bg-white border border-neutral-200 hover:bg-neutral-100 p-3 text-neutral-700 hover:text-neutral-950 rounded-xl transition-all flex items-center justify-center cursor-pointer shadow-2xs hover:scale-[1.03] active:scale-95"
-                  title="Exporter en PDF"
+                  title="Exporter les secrets en HTML"
                 >
-                  <Download size={18} className="stroke-[2.5] text-indigo-600" />
+                  <FileText size={18} className="stroke-[2.5] text-indigo-600" />
                 </button>
                 <button
                   onClick={() => setShowAddForm(true)}
@@ -2350,59 +2076,8 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* ==================== PDF OPTIONS MODAL ==================== */}
-      {showPdfOptionsModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-neutral-900/40 backdrop-blur-xs">
-          <div className="bg-white border border-neutral-200 rounded-2xl w-full max-w-sm shadow-xl p-6 space-y-4">
-            <div className="flex items-center gap-2 pb-1 text-neutral-900">
-              <FileText className="w-5 h-5 text-indigo-600" />
-              <h3 className="font-semibold text-sm tracking-tight font-sans">Options d'exportation PDF</h3>
-            </div>
-            
-            <p className="text-xs text-neutral-500 leading-relaxed font-sans">
-              Toutes vos fiches seront classées par ordre de type (catégorie) et présentées sous forme de tableau dans un document PDF structuré.
-            </p>
-
-            <div className="bg-neutral-50 p-3.5 rounded-xl border border-neutral-150 space-y-2 select-none">
-              <label className="flex items-center gap-2.5 cursor-pointer text-xs font-semibold text-neutral-700">
-                <input
-                  type="checkbox"
-                  checked={pdfPasswordsVisible}
-                  onChange={(e) => setPdfPasswordsVisible(e.target.checked)}
-                  className="rounded border-neutral-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
-                />
-                <span className="font-sans">Afficher les mots de passe</span>
-              </label>
-              <p className="text-[10px] text-neutral-400 leading-normal pl-6.5 font-sans">
-                Si coché, vos mots de passe seront visibles en clair dans le document généré. Sinon, ils seront masqués par "••••••••".
-              </p>
-            </div>
-
-            <div className="flex items-center justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setShowPdfOptionsModal(false)}
-                className="bg-white border border-neutral-200 px-3.5 py-1.5 hover:bg-neutral-100 rounded-lg text-xs font-semibold text-neutral-600 transition-colors cursor-pointer font-sans"
-              >
-                Annuler
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowPdfOptionsModal(false);
-                  generateAndExportPdf(pdfPasswordsVisible);
-                }}
-                className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-1.5 rounded-lg text-xs font-semibold shadow transition-colors cursor-pointer flex items-center gap-1.5 font-sans"
-              >
-                <Download size={13} />
-                Générer le PDF
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ==================== CUSTOM DIALOGS FOR ANDROID WORKAROUNDS ==================== */}
+      {/* ==================== PRINT VIEW ==================== */}
+      
       {confirmModal && confirmModal.isOpen && (
         <div className="fixed inset-0 z-55 flex items-center justify-center p-4 bg-neutral-900/40 backdrop-blur-xs">
           <div className="bg-white border border-neutral-200 rounded-2xl w-full max-w-sm shadow-xl p-6 space-y-4">
