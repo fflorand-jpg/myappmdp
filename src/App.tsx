@@ -722,7 +722,7 @@ export default function App() {
   };
 
 
-  const exportSecretsToHtml = () => {
+  const exportSecretsToHtml = async () => {
     const htmlContent = `
       <!DOCTYPE html>
       <html>
@@ -755,19 +755,30 @@ export default function App() {
             </table>
           `;
         }).join('')}
-        <script>
-          window.onload = function() {
-            window.print();
-          };
-        </script>
       </body>
       </html>
     `;
-    const newWindow = window.open('', '_blank');
-    if (newWindow) {
-      newWindow.document.write(htmlContent);
-      newWindow.document.close();
-      newWindow.focus();
+
+    const blob = new Blob([htmlContent], { type: 'text/html' });
+    const file = new File([blob], 'mes_secrets.html', { type: 'text/html' });
+
+    if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({
+          files: [file],
+          title: 'Mes Secrets',
+          text: 'Voici mes secrets exportés.'
+        });
+      } catch (err) {
+        alert("Erreur de partage : " + err);
+      }
+    } else {
+      const newWindow = window.open('', '_blank');
+      if (newWindow) {
+        newWindow.document.write(htmlContent);
+        newWindow.document.close();
+        newWindow.focus();
+      }
     }
   };
 
